@@ -21,7 +21,23 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+container_execution = begin
+  virtualization.role == 'guest' && virtualization.system =~ /^(lxc|docker)$/
+rescue NoMethodError
+  false
+end
+
 title 'Alpine Linux files and directories'
+
+cpuvulndir = '/sys/devices/system/cpu/vulnerabilities/'
+
+log_files=['cron', 'maillog', 'messages', 'secure', 'spooler', 'syslog']
+
+blacklist = attribute(
+  'blacklist',
+  value: suid_blacklist.default,
+  description: 'blacklist of suid/sgid program on system'
+)
 
 control 'os-01' do
   impact 0.5
@@ -98,7 +114,7 @@ control 'os-05' do
     end
   end
 
-  %w(cron maillog messages secure spooler syslog).each do |log|
+  log_files.each do |log|
     if file("/var/log/#{log}").exist?
       describe.one do
         describe file("/var/log/#{log}") do
@@ -132,7 +148,7 @@ control 'os-06' do
     end
   end
 
-  %w(cron maillog messages secure spooler syslog).each do |log|
+  log_files.each do |log|
     if file("/var/log/#{log}").exist?
       describe.one do
         describe file("/var/log/#{log}") do
@@ -169,7 +185,7 @@ control 'os-07' do
     end
   end
 
-  %w(cron maillog messages secure spooler syslog).each do |log|
+  log_files.each do |log|
     if file("/var/log/#{log}").exist?
       describe file("/var/log/#{log}") do
         it { should be_writable.by 'owner' }
@@ -262,6 +278,10 @@ control 'os-12' do
     its('exit_status') { should eq 0 }
     its('stdout') { should be_empty }
     its('stderr') { should eq '' }
+  end
+  
+  describe file('/etc/hosts.equiv') do
+    it { should_not exist }
   end
 end
 
@@ -471,5 +491,140 @@ control 'os-25' do
 
   describe port(22) do
     it { should_not be_listening }
+  end
+end
+
+control 'os-26' do
+  impact 1.0
+  title 'Protect cron directories and files'
+  desc 'The cron directories and files should belong to root.'
+
+  cron_files = [
+    '/etc/crontab',
+    '/etc/cron.hourly',
+    '/etc/cron.daily',
+    '/etc/cron.weekly',
+    '/etc/cron.monthly',
+    '/etc/cron.d'
+  ]
+
+  cron_files.each do |cron_file|
+    next unless file(cron_file).exist?
+
+    describe file(cron_file) do
+      it { should be_owned_by 'root' }
+      it { should_not be_writable.by('group') }
+      it { should_not be_writable.by('other') }
+      it { should_not be_readable.by('group') }
+      it { should_not be_readable.by('other') }
+    end
+  end
+end
+
+control 'os-27' do
+  impact 1.0
+  title 'Protect log-directory'
+  desc 'The log-directory /var/log should belong to root'
+  
+  describe file('/var/log') do
+    it { should be_directory }
+    it { should be_owned_by 'root' }
+    its(:group) { should match(/^root|syslog$/) }
+  end
+end
+
+control 'os-28' do
+  impact 1.0
+  title 'Check owner and permissions for /etc/shadow'
+  desc 'Check periodically the owner and permissions for /etc/shadow'
+  
+  describe file('/etc/shadow') do
+    it { should exist }
+    it { should be_file }
+    it { should be_owned_by 'root' }
+    its('group') { should eq 'shadow' }
+    it { should_not be_executable }
+    it { should_not be_readable.by('other') }
+    it { should be_writable.by('owner') }
+    it { should be_readable.by('owner') }
+    it { should be_readable.by('group') }
+  end
+end
+
+control 'os-29' do
+  impact 1.0
+  title 'Check owner and permissions for /etc/passwd'
+  desc 'Check periodically the owner and permissions for /etc/passwd'
+  
+  describe file('/etc/passwd') do
+    it { should exist }
+    it { should be_file }
+    it { should be_owned_by 'root' }
+    its('group') { should eq 'root' }
+    it { should_not be_executable }
+    it { should be_writable.by('owner') }
+    it { should_not be_writable.by('group') }
+    it { should_not be_writable.by('other') }
+    it { should be_readable.by('owner') }
+    it { should be_readable.by('group') }
+    it { should be_readable.by('other') }
+  end
+end
+
+control 'os-30' do
+  impact 1.0
+  title 'Check passwords hashes in /etc/passwd'
+  desc 'Check periodically that /etc/passwd does not contain passwords'
+
+  describe passwd do
+    its('passwords') { should be_in ['x', '*'] }
+  end
+end
+
+control 'os-31' do
+  impact 1.0
+  title 'Dot in PATH variable'
+  desc 'Do not include the current working directory (.) in PATH variable.'
+
+  describe os_env('PATH') do
+    its('split') { should_not include('') }
+    its('split') { should_not include('.') }
+  end
+end
+
+control 'os-32' do
+  impact 1.0
+  title 'Check for SUID/ SGID blacklist'
+  desc 'Find blacklisted SUID and SGID files'
+
+  describe suid_check(blacklist) do
+    its('diff') { should be_empty }
+  end
+end
+
+control 'os-33' do
+  impact 1.0
+  title 'Unique uid and gid'
+  desc 'Check for unique uids gids'
+
+  describe passwd do
+    its('uids') { should_not contain_duplicates }
+  end
+
+  describe etc_group do
+    its('gids') { should_not contain_duplicates }
+  end
+end
+
+control 'os-34' do
+  impact 1.0
+  title 'Check for .rhosts and .netrc file'
+  desc 'Find .rhosts and .netrc files - CIS Benchmark 9.2.9-10'
+
+  output = command('find / -maxdepth 3 \( -iname .rhosts -o -iname .netrc \) -print 2>/dev/null | grep -v \'^find:\'')
+  out = output.stdout.split(/\r?\n/)
+
+  describe out do
+    it { should be_empty }
   end
 end

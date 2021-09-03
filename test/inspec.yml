@@ -10,9 +10,9 @@ summary: Test-suite for BlueBeluga hardend images
 version: 1.0.0
 
 supports:
-  - os-family: unix
+  - os-family: linux
 
-inputs:
+inputs:  
   - name: alpine_version
     description: "The version of Alpine Linux."
     type: Numeric
